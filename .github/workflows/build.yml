@@ -1,0 +1,247 @@
+name: Build stunnel for EdgeRouter 4
+
+on:
+  schedule:
+    # Check for new releases daily at 6 AM UTC
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      stunnel_version:
+        description: 'Stunnel version to build (e.g., 5.76). Leave empty to auto-detect latest.'
+        required: false
+        default: ''
+      force_rebuild:
+        description: 'Force rebuild even if release exists'
+        required: false
+        default: 'false'
+
+env:
+  OPENSSL_VERSION: "1.1.1w"
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      stunnel_version: ${{ steps.get-version.outputs.version }}
+      should_build: ${{ steps.check-release.outputs.should_build }}
+    steps:
+      - name: Get latest stunnel version
+        id: get-version
+        run: |
+          if [ -n "${{ github.event.inputs.stunnel_version }}" ]; then
+            VERSION="${{ github.event.inputs.stunnel_version }}"
+          else
+            # Fetch the downloads page and extract latest version
+            VERSION=$(curl -s https://www.stunnel.org/downloads.html | grep -oP 'stunnel-\K[0-9]+\.[0-9]+(?=\.tar\.gz)' | head -1)
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Detected stunnel version: $VERSION"
+
+      - name: Check if release already exists
+        id: check-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.get-version.outputs.version }}"
+          FORCE="${{ github.event.inputs.force_rebuild }}"
+          
+          # Check if release exists
+          if gh release view "v${VERSION}" --repo ${{ github.repository }} &>/dev/null; then
+            if [ "$FORCE" = "true" ]; then
+              echo "Release exists but force rebuild requested"
+              echo "should_build=true" >> $GITHUB_OUTPUT
+            else
+              echo "Release v${VERSION} already exists, skipping build"
+              echo "should_build=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "Release v${VERSION} does not exist, will build"
+            echo "should_build=true" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install MIPS64 cross-compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mips64-linux-gnuabi64 g++-mips64-linux-gnuabi64 build-essential wget
+
+      - name: Verify cross-compiler
+        run: |
+          mips64-linux-gnuabi64-gcc --version
+          echo "Target: $(mips64-linux-gnuabi64-gcc -dumpmachine)"
+
+      - name: Download OpenSSL
+        run: |
+          wget -q https://github.com/openssl/openssl/releases/download/OpenSSL_${OPENSSL_VERSION//./_}/openssl-${OPENSSL_VERSION}.tar.gz
+          tar xzf openssl-${OPENSSL_VERSION}.tar.gz
+
+      - name: Build OpenSSL for MIPS64
+        run: |
+          cd openssl-${OPENSSL_VERSION}
+          ./Configure linux64-mips64 \
+              --cross-compile-prefix=mips64-linux-gnuabi64- \
+              --prefix=${{ github.workspace }}/mips64-openssl \
+              --openssldir=${{ github.workspace }}/mips64-openssl/ssl \
+              no-shared \
+              no-async
+          make -j$(nproc)
+          make install_sw
+
+      - name: Download stunnel
+        env:
+          STUNNEL_VERSION: ${{ needs.check-version.outputs.stunnel_version }}
+        run: |
+          wget -q "https://www.stunnel.org/archive/5.x/stunnel-${STUNNEL_VERSION}.tar.gz"
+          tar xzf stunnel-${STUNNEL_VERSION}.tar.gz
+
+      - name: Build stunnel for MIPS64 (static)
+        env:
+          STUNNEL_VERSION: ${{ needs.check-version.outputs.stunnel_version }}
+        run: |
+          cd stunnel-${STUNNEL_VERSION}
+          
+          # Configure
+          ./configure \
+              --host=mips64-linux-gnuabi64 \
+              --with-ssl=${{ github.workspace }}/mips64-openssl \
+              --disable-libwrap \
+              --disable-systemd \
+              --disable-shared \
+              CFLAGS="-O2" \
+              LDFLAGS="-static" \
+              LIBS="-lpthread -ldl"
+          
+          # Build
+          make -j$(nproc)
+          
+          # Manual static link for fully static binary
+          cd src
+          mips64-linux-gnuabi64-gcc -static -o stunnel-static \
+              stunnel-*.o env.o \
+              ${{ github.workspace }}/mips64-openssl/lib/libssl.a \
+              ${{ github.workspace }}/mips64-openssl/lib/libcrypto.a \
+              -lpthread -ldl
+
+      - name: Prepare release artifacts
+        env:
+          STUNNEL_VERSION: ${{ needs.check-version.outputs.stunnel_version }}
+        run: |
+          mkdir -p release
+          
+          # Copy and strip binary
+          cp stunnel-${STUNNEL_VERSION}/src/stunnel-static release/stunnel
+          mips64-linux-gnuabi64-strip release/stunnel
+          
+          # Copy sample config
+          cp stunnel-${STUNNEL_VERSION}/tools/stunnel.conf-sample release/
+          
+          # Verify binary
+          echo "=== Binary info ===" 
+          file release/stunnel
+          ls -la release/stunnel
+          mips64-linux-gnuabi64-readelf -d release/stunnel || echo "No dynamic section (fully static)"
+          
+          # Create README
+          cat > release/README.md << 'EOF'
+          # stunnel ${STUNNEL_VERSION} for EdgeRouter 4
+          
+          Fully static build for Ubiquiti EdgeRouter 4 (Cavium Octeon MIPS64).
+          
+          ## Build Info
+          - stunnel: ${STUNNEL_VERSION}
+          - OpenSSL: ${OPENSSL_VERSION} (static)
+          - libc: glibc (static)
+          - Architecture: MIPS64 big-endian
+          
+          ## Installation
+          ```bash
+          scp stunnel ubnt@<router-ip>:/tmp/
+          ssh ubnt@<router-ip>
+          sudo cp /tmp/stunnel /usr/local/bin/
+          sudo chmod +x /usr/local/bin/stunnel
+          /usr/local/bin/stunnel -version
+          ```
+          
+          ## Persistence
+          ```bash
+          sudo mkdir -p /config/scripts/post-config.d
+          sudo tee /config/scripts/post-config.d/stunnel.sh << 'SCRIPT'
+          #!/bin/bash
+          /usr/local/bin/stunnel /config/stunnel/stunnel.conf
+          SCRIPT
+          sudo chmod +x /config/scripts/post-config.d/stunnel.sh
+          ```
+          EOF
+          
+          # Substitute variables in README
+          sed -i "s/\${STUNNEL_VERSION}/${STUNNEL_VERSION}/g" release/README.md
+          sed -i "s/\${OPENSSL_VERSION}/${OPENSSL_VERSION}/g" release/README.md
+          
+          # Create tarball
+          cd release
+          tar czvf stunnel-${STUNNEL_VERSION}-er4-mips64-static.tar.gz stunnel stunnel.conf-sample README.md
+          
+          # Create checksums
+          sha256sum stunnel > stunnel.sha256
+          sha256sum stunnel-${STUNNEL_VERSION}-er4-mips64-static.tar.gz > stunnel-${STUNNEL_VERSION}-er4-mips64-static.tar.gz.sha256
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: stunnel-er4-mips64
+          path: release/
+
+  release:
+    needs: [check-version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: stunnel-er4-mips64
+          path: release/
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STUNNEL_VERSION: ${{ needs.check-version.outputs.stunnel_version }}
+        run: |
+          cd release
+          
+          # Delete existing release if force rebuild
+          gh release delete "v${STUNNEL_VERSION}" --repo ${{ github.repository }} --yes 2>/dev/null || true
+          
+          # Create release
+          gh release create "v${STUNNEL_VERSION}" \
+              --repo ${{ github.repository }} \
+              --title "stunnel ${STUNNEL_VERSION} for EdgeRouter 4" \
+              --notes "Fully static build of stunnel ${STUNNEL_VERSION} for EdgeRouter 4 (MIPS64).
+
+          ## Downloads
+          - \`stunnel\` - Standalone binary (fully static, no dependencies)
+          - \`stunnel-${STUNNEL_VERSION}-er4-mips64-static.tar.gz\` - Complete package with config sample
+
+          ## Build Details
+          - OpenSSL: ${OPENSSL_VERSION} (statically linked)
+          - libc: glibc (statically linked)
+          - Architecture: MIPS64 big-endian (Cavium Octeon)
+          
+          ## Quick Install
+          \`\`\`bash
+          scp stunnel ubnt@<router-ip>:/tmp/
+          ssh ubnt@<router-ip> 'sudo cp /tmp/stunnel /usr/local/bin/ && sudo chmod +x /usr/local/bin/stunnel'
+          \`\`\`" \
+              stunnel \
+              stunnel.sha256 \
+              stunnel-${STUNNEL_VERSION}-er4-mips64-static.tar.gz \
+              stunnel-${STUNNEL_VERSION}-er4-mips64-static.tar.gz.sha256 \
+              stunnel.conf-sample

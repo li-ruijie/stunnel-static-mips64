@@ -1,0 +1,18 @@
+# Build artifacts
+*.tar.gz
+*.o
+*.a
+stunnel-*/
+openssl-*/
+mips64-openssl/
+release/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
