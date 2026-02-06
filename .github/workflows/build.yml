@@ -15,6 +15,12 @@ on:
         required: false
         default: 'false'
 
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
 env:
   OPENSSL_VERSION: "1.1.1w"
 
@@ -27,12 +33,19 @@ jobs:
     steps:
       - name: Get latest stunnel version
         id: get-version
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.stunnel_version }}
         run: |
-          if [ -n "${{ github.event.inputs.stunnel_version }}" ]; then
-            VERSION="${{ github.event.inputs.stunnel_version }}"
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
           else
             # Fetch the downloads page and extract latest version
             VERSION=$(curl -s https://www.stunnel.org/downloads.html | grep -oP 'stunnel-\K[0-9]+\.[0-9]+(?=\.tar\.gz)' | head -1)
+          fi
+          # Validate version format (prevents shell injection)
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+[a-z]?$ ]]; then
+            echo "::error::Invalid version format: $VERSION"
+            exit 1
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected stunnel version: $VERSION"
@@ -41,12 +54,12 @@ jobs:
         id: check-release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.get-version.outputs.version }}
+          FORCE: ${{ github.event.inputs.force_rebuild }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          VERSION="${{ steps.get-version.outputs.version }}"
-          FORCE="${{ github.event.inputs.force_rebuild }}"
-          
           # Check if release exists
-          if gh release view "v${VERSION}" --repo ${{ github.repository }} &>/dev/null; then
+          if gh release view "v${VERSION}" --repo "$GH_REPO" &>/dev/null; then
             if [ "$FORCE" = "true" ]; then
               echo "Release exists but force rebuild requested"
               echo "should_build=true" >> $GITHUB_OUTPUT
@@ -65,7 +78,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install MIPS64 cross-compiler
         run: |
@@ -193,7 +206,7 @@ jobs:
           sha256sum stunnel-${STUNNEL_VERSION}-er4-mips64-static.tar.gz > stunnel-${STUNNEL_VERSION}-er4-mips64-static.tar.gz.sha256
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: stunnel-er4-mips64
           path: release/
@@ -205,7 +218,7 @@ jobs:
       contents: write
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: stunnel-er4-mips64
           path: release/
@@ -214,15 +227,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           STUNNEL_VERSION: ${{ needs.check-version.outputs.stunnel_version }}
+          GH_REPO: ${{ github.repository }}
         run: |
           cd release
-          
+
           # Delete existing release if force rebuild
-          gh release delete "v${STUNNEL_VERSION}" --repo ${{ github.repository }} --yes 2>/dev/null || true
-          
+          gh release delete "v${STUNNEL_VERSION}" --repo "$GH_REPO" --yes 2>/dev/null || true
+
           # Create release
           gh release create "v${STUNNEL_VERSION}" \
-              --repo ${{ github.repository }} \
+              --repo "$GH_REPO" \
               --title "stunnel ${STUNNEL_VERSION} for EdgeRouter 4" \
               --notes "Fully static build of stunnel ${STUNNEL_VERSION} for EdgeRouter 4 (MIPS64).
 
