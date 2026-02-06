@@ -1,0 +1,18 @@
+# Helper
+.asst/
+.claude/
+.devc-scripts/
+.devcontainer/
+.gitignore
+AGENTS.md
+
+# Vim
+*.swo
+*.swp
+*.un~
+*~
+.vbak
+
+# Windows
+desktop.ini
+Thumbs.db
