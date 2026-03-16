@@ -210,6 +210,7 @@ jobs:
         with:
           name: stunnel-er4-mips64
           path: release/
+          retention-days: 1
 
   release:
     needs: [check-version, build]
