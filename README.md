@@ -4,7 +4,7 @@ Fully static [stunnel](https://www.stunnel.org/) builds for the Ubiquiti EdgeRou
 
 ## Features
 
-- **Fully static binary** - No dependencies, just copy and run
+- **Fully static binary** - No dependencies, copy and run
 - **Automatic updates** - GitHub Actions checks daily for new stunnel releases
 - **TLS 1.3 support** - Built with OpenSSL 1.1.1w
 
@@ -88,4 +88,4 @@ From the [Actions tab](../../actions/workflows/build.yml):
 
 ## License
 
-This repository contains build automation only. stunnel is licensed under GPLv2+ with OpenSSL exception. See [stunnel.org](https://www.stunnel.org/) for details.
+This repository contains build automation only, licensed under AGPL-3.0-or-later. stunnel is licensed under GPLv2+ with OpenSSL exception. See [stunnel.org](https://www.stunnel.org/) for details.
