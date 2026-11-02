@@ -39,8 +39,13 @@ jobs:
           if [ -n "$INPUT_VERSION" ]; then
             VERSION="$INPUT_VERSION"
           else
-            # Fetch the downloads page and extract latest version
-            VERSION=$(curl -s https://www.stunnel.org/downloads.html | grep -oP 'stunnel-\K[0-9]+\.[0-9]+(?=\.tar\.gz)' | head -1)
+            # Fetch the downloads page and extract latest version. Retried, since
+            # the fetch failed outright on 2026-08-22 and 2026-10-17 and the page
+            # parsed on the next day's run each time. -S names the curl error,
+            # where -s alone ended the step under pipefail with no message.
+            VERSION=$(curl -fsS --retry 3 --retry-all-errors --retry-delay 15 --max-time 60 \
+              https://www.stunnel.org/downloads.html \
+              | grep -oP 'stunnel-\K[0-9]+\.[0-9]+(?=\.tar\.gz)' | head -1)
           fi
           # Validate version format (prevents shell injection)
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+[a-z]?$ ]]; then
